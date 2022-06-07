@@ -4,7 +4,7 @@ A copy of iantrich's [aftership-card](https://github.com/iantrich/aftership-card
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg?style=for-the-badge)](https://github.com/hacs/integration)
 
-(TODO: Insert Picture of the card.)
+![example](https://github.com/myztillx/aftership-card/blob/main/docs/images/example.png)
 
 I am new to coding and frontend, especially Lit. I will do my best to address issue and keep this repository up to date.
 
