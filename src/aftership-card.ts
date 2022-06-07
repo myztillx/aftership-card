@@ -1,0 +1,426 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import {
+  LitElement,
+  html,
+  TemplateResult,
+  css,
+  PropertyValues,
+  CSSResultGroup,
+} from 'lit'
+import { customElement, property, state, query } from 'lit/decorators'
+import { repeat } from 'lit/directives/repeat'
+import {
+  HomeAssistant,
+  hasConfigOrEntityChanged,
+  ActionHandlerEvent,
+  LovelaceCardEditor,
+  forwardHaptic,
+  fireEvent,
+} from 'custom-card-helpers'
+
+import type { AftershipCardConfig, Tracking, ItemEventProperty } from './types'
+import { actionHandler } from './action-handler-directive'
+import { CARD_VERSION } from './const'
+import { localize } from './localize/localize'
+
+/* eslint no-console: 0 */
+console.info(
+  `%c  AFTERSHIP-CARD \n%c  ${localize('common.version')} ${CARD_VERSION}    `,
+  'color: orange; font-weight: bold; background: black',
+  'color: white; font-weight: bold; background: dimgray'
+)
+
+// This puts your card into the UI card picker dialog
+;(window as any).customCards = (window as any).customCards || []
+;(window as any).customCards.push({
+  type: 'aftership-card',
+  name: 'Aftership Card',
+  description: 'A card for tracking Aftership packages.',
+})
+
+@customElement('aftership-card')
+export class AftershipCard extends LitElement {
+  public static async getConfigElement(): Promise<LovelaceCardEditor> {
+    await import('./editor')
+    return document.createElement('aftership-card-editor')
+  }
+
+  public static getStubConfig(): Record<string, unknown> {
+    return {}
+  }
+
+  // https://lit.dev/docs/components/properties/
+  @property({ attribute: false }) public hass!: HomeAssistant
+
+  @state() private config!: AftershipCardConfig
+
+  // https://lit.dev/docs/components/properties/#accessors-custom
+  public setConfig(config: AftershipCardConfig): void {
+    if (!config || !config.entity) {
+      throw new Error(localize('common.invalid_configuration'))
+    }
+
+    this.config = {
+      name: 'Aftership',
+      ...config,
+    }
+  }
+
+  // https://lit.dev/docs/components/lifecycle/#reactive-update-cycle-performing
+  protected shouldUpdate(changedProps: PropertyValues): boolean {
+    if (!this.config) {
+      return false
+    }
+
+    return hasConfigOrEntityChanged(this, changedProps, false)
+  }
+
+  // https://lit.dev/docs/components/rendering/
+  protected render(): TemplateResult | void {
+    if (!this.config || !this.hass) {
+      return html``
+    }
+
+    const stateObj = this.hass.states[this.config.entity]
+
+    if (!stateObj) {
+      return html`
+        <ha-card>
+          <div class="warning">Entity not available: ${this.config.entity}</div>
+        </ha-card>
+      `
+    }
+
+    const delivered: Tracking[] = stateObj.attributes['trackings'].filter(
+      (tracking: Tracking) => {
+        return tracking.status.toLowerCase() === 'delivered'
+      }
+    )
+
+    const intransit: Tracking[] = stateObj.attributes['trackings'].filter(
+      (tracking: Tracking) => {
+        return tracking.status.toLowerCase() !== 'delivered'
+      }
+    )
+
+    return html`
+      <ha-card>
+        <div class="header" @click=${this._moreInfo}>${this.config.name}</div>
+        ${repeat(
+          intransit,
+          (item) => item.tracking_number,
+          (item, index) =>
+            html`
+              <paper-item>
+                <paper-item-body class="icon">
+                  <ha-icon
+                    icon="mdi:truck-delivery"
+                    .index=${index}
+                    .item=${item}
+                    .title="Expected Delivery: ${item.expected_delivery
+                      ? new Date(item.expected_delivery).toDateString()
+                      : 'Unknown'}"
+                    @action=${this._handleAction}
+                    .actionHandler=${actionHandler({ hasHold: true })}
+                  ></ha-icon>
+                </paper-item-body>
+                <paper-item-body>
+                  <div>${item.name}</div>
+                  <div class="secondary">
+                    ${item.last_checkpoint && item.last_checkpoint.message
+                      ? item.last_checkpoint.message
+                      : ''}
+                    (${item.status})
+                  </div>
+                </paper-item-body>
+                <paper-item-body class="last">
+                  <div style="text-transform: capitalize">
+                    ${item.last_checkpoint && item.last_checkpoint.location
+                      ? item.last_checkpoint.location
+                      : item.status}
+                  </div>
+                  <div class="secondary">
+                    ${new Date(item.last_update).toDateString()}
+                  </div>
+                </paper-item-body>
+              </paper-item>
+            `
+        )}
+        ${repeat(
+          delivered,
+          (item) => item.tracking_number,
+          (item, index) =>
+            html`
+              <paper-item>
+                <paper-item-body class="icon">
+                  <ha-icon
+                    icon="mdi:package"
+                    .index=${index}
+                    .item=${item}
+                    @action=${this._handleAction}
+                    .actionHandler=${actionHandler({ hasHold: true })}
+                  ></ha-icon>
+                </paper-item-body>
+                <paper-item-body>
+                  <div>${item.name}</div>
+                  <div class="secondary">
+                    ${item.tracking_number} (${item.slug})
+                  </div>
+                </paper-item-body>
+                <paper-item-body class="last">
+                  <div>${item.status}</div>
+                  <div class="secondary">
+                    ${new Date(item.last_update).toDateString()}
+                  </div>
+                </paper-item-body>
+              </paper-item>
+            `
+        )}
+        ${this.config.show_add == false
+          ? delivered.length === 0 && intransit.length === 0
+            ? html` <paper-item> Not tracking any packages yet. </paper-item> `
+            : null
+          : html`
+              <paper-item>
+                <paper-item-body class="icon">
+                  <ha-icon
+                    class="addButton"
+                    @click=${this._addItem}
+                    icon="hass:plus"
+                    title="Add Tracking"
+                  ></ha-icon>
+                </paper-item-body>
+                <paper-item-body>
+                  <paper-input
+                    no-label-float
+                    placeholder="Title"
+                    @keydown=${this._addKeyPress}
+                    id="trackTitle"
+                  ></paper-input>
+                </paper-item-body>
+                <paper-item-body>
+                  <paper-input
+                    no-label-float
+                    placeholder="Tracking"
+                    @keydown=${this._addKeyPress}
+                    id="trackNum"
+                    required
+                  ></paper-input>
+                </paper-item-body>
+                <paper-item-body>
+                  <paper-input
+                    no-label-float
+                    placeholder="Slug"
+                    @keydown=${this._addKeyPress}
+                    id="slug"
+                  ></paper-input>
+                </paper-item-body>
+              </paper-item>
+            `}
+      </ha-card>
+    `
+  }
+
+  private _handleAction(ev: ActionHandlerEvent): void {
+    switch (ev.detail.action) {
+      case 'tap':
+        this._openLink(ev)
+        break
+      case 'hold':
+        this._removeItem(ev)
+        break
+      default:
+        break
+    }
+  }
+
+  private _openLink(ev: ActionHandlerEvent): void {
+    //* item is a property on the element.
+    //* So it can be accessed through the event.
+    const item = (ev.target as ItemEventProperty).item
+    window.open(item.link, 'window')
+  }
+
+  private _removeItem(ev: ActionHandlerEvent): void {
+    //* item is a property on the element.
+    //* So it can be accessed through the event.
+    const item = (ev.target as ItemEventProperty).item
+    if (!window.confirm('Are you sure you want to remove this tracking?')) {
+      return
+    }
+
+    if (this.hass) {
+      this.hass.callService('aftership', 'remove_tracking', {
+        tracking_number: item.tracking_number,
+        slug: item.slug,
+      })
+      forwardHaptic('success')
+    }
+
+    forwardHaptic('failure')
+  }
+
+  private _moreInfo(): void {
+    if (this.config) {
+      fireEvent(this, 'hass-more-info', {
+        entityId: this.config.entity,
+      })
+    }
+  }
+
+  @query('#trackTitle') _trackTitle!: HTMLInputElement
+  @query('#trackNum') _trackNum!: HTMLInputElement
+  @query('#slug') _slug!: HTMLInputElement
+
+  private _addItem(ev?: MouseEvent): void {
+    const trackTitle = this._trackTitle
+    const trackNum = this._trackNum
+    const slug = this._slug
+
+    if (
+      this.hass &&
+      trackTitle &&
+      trackNum &&
+      trackNum.value &&
+      trackNum.value.length > 0
+    ) {
+      this.hass.callService('aftership', 'add_tracking', {
+        tracking_number: trackNum.value,
+        title: trackTitle.value,
+        slug: slug.value,
+      })
+
+      trackTitle.value = ''
+      trackNum.value = ''
+      slug.value = ''
+
+      if (ev) {
+        trackTitle.focus()
+      }
+    }
+  }
+
+  private _addKeyPress(ev: KeyboardEvent): void {
+    if (ev.key === 'Enter') {
+      this._addItem()
+    }
+  }
+
+  // https://lit.dev/docs/components/styles/
+  static get styles(): CSSResultGroup {
+    return css`
+      ha-card {
+        padding: 16px;
+      }
+
+      .warning {
+        display: block;
+        color: black;
+        background-color: #fce588;
+        padding: 8px;
+      }
+
+      .header {
+        /* start paper-font-headline style */
+        font-family: 'Roboto', 'Noto', sans-serif;
+        -webkit-font-smoothing: antialiased; /* OS X subpixel AA bleed bug */
+        text-rendering: optimizeLegibility;
+        font-size: 24px;
+        font-weight: 400;
+        letter-spacing: -0.012em;
+        /* end paper-font-headline style */
+
+        line-height: 40px;
+        cursor: pointer;
+      }
+
+      paper-input {
+        --paper-input-container-underline: {
+          display: none;
+        }
+        --paper-input-container-underline-focus: {
+          display: none;
+        }
+        --paper-input-container-underline-disabled: {
+          display: none;
+        }
+        position: relative;
+        top: 1px;
+      }
+
+      ha-icon {
+        padding: 9px 15px 11px 15px;
+        cursor: pointer;
+        color: var(--primary-color);
+      }
+
+      .side-by-side {
+        display: flex;
+      }
+
+      .side-by-side > * {
+        flex: 1;
+        padding-right: 4px;
+      }
+
+      paper-item {
+        padding: 0;
+      }
+
+      paper-item-body {
+        padding-right: 16px;
+        margin-top: 16px;
+        display: flex;
+        flex-direction: column;
+        justify-content: normal;
+        flex: auto;
+        flex-basis: auto;
+        white-space: nowrap;
+        overflow: hidden;
+      }
+
+      paper-item-body > * {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      paper-item-body.icon {
+        flex-direction: row;
+        max-width: 54px;
+        min-width: 54px;
+      }
+
+      table {
+        width: 100%;
+      }
+
+      .last {
+        text-align: right;
+        min-width: 80px;
+      }
+
+      .secondary {
+        display: block;
+        color: var(--secondary-text-color);
+        margin-top: -10px;
+        font-size: 10px;
+        white-space: nowrap;
+      }
+
+      table {
+        margin-top: -16px;
+      }
+
+      #tracking {
+        text-align: right;
+      }
+
+      .divider {
+        height: 1px;
+        background-color: var(--divider-color);
+        margin: 6px 40px 6px 0px;
+      }
+    `
+  }
+}
