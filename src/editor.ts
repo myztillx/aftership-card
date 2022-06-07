@@ -67,6 +67,7 @@ export class AftershipCardEditor
 
     // You can restrict on domain type
     const entities = Object.keys(this.hass.states)
+    const entitiesFiltered = entities.filter((v) => v.match('aftership'))
 
     return html`
       <mwc-select
@@ -78,7 +79,7 @@ export class AftershipCardEditor
         @selected=${this._valueChanged}
         @closed=${(ev) => ev.stopPropagation()}
       >
-        ${entities.map((entity) => {
+        ${entitiesFiltered.map((entity) => {
           return html`<mwc-list-item .value=${entity}>${entity}</mwc-list-item>`
         })}
       </mwc-select>
